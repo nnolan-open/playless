@@ -1,9 +1,9 @@
 #!/usr/bin/env mksh
-# Playless is provided with the MIT EXPAT license below.
-# author email: nick.nolan@comcast.net
+# Playless is provided with the MIT EXPAT licesnse below.
+# author email: nnolan.open@gmail.com
 # This has been tested on Debian Linux and FreeBSD 10
 
-version="BETA 1" #(public) 
+version="BETA 2" #(public) 
 license="
 Playless Version: $version. ( a CLI mp3 frontend for multiple mp3 handlers )
 Copyright (C) 2014 Nickolas Nolan
@@ -22,6 +22,8 @@ THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMP
 
 
 # TODO list
+#!removed -o flag until major bugs fixed!
+
 # - new bug. player override didn't check path.
 #	tested with personally compiled c program not in PATH
 # - comma separate the -o flag.
@@ -82,7 +84,8 @@ THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMP
 # if this occurs open a shell and kill the processes manually. if you do not know 
 # how to kill processes manually, you should not be modifying this script.
 
-update() {
+update () {
+	#messy.... resume and playstatus should be logically graphed and re-done.
         if [[ "$playstatus" == "playing" ]] || [[ "$playstatus" == "shuffle" ]]; then
 		if [[ "$resume" == "next" ]]; then
 			playnext $playstatus
@@ -90,11 +93,30 @@ update() {
 		resume=$playstatus
 		while [[ "$playstatus" == "playing" ]] || [[ "$playstatus" == "shuffle" ]] ; do 
                         localhist="${localhist}${current},"
-			playtrack 2>/dev/null || waitend # { playstatus="stopped" ; printf "%s" "$localhist" > $fifofile ; } #keep that last semicolin
-			stoptrack
-			playnext $playstatus
-        	done 2>/dev/null & kpid=$!
-
+			#playtrack phased out for now. paste of block at next comment
+			currenttrack="${masterlist[$current]}"
+			if [[ "$current" -lt "${#masterlist[@]}" ]]; then
+				printf "%b" "current track: $current \n$currenttrack\n${tps1}"
+				$player "$currenttrack" 2>/dev/null || playstatus="stopped"
+				#$player "$currenttrack" 2>/dev/null & playerpid=$!
+        			if [[ "$fifofile" != "/dev/null" ]] && [[ -p $fifofile ]]; then
+					read -t 1 inbuff <> $fifofile
+					if [[ "$inbuff" == "stopped" ]] ; then
+						#this if statement prevents fifo que error from stopping the process
+						playstatus="stopped"	
+						unset inbuff
+					fi
+				fi
+			else
+				printf "%b" "no file to play\n"
+				resume=$playstatus
+				playstatus=stopped
+			fi
+			# next comment.... block ended here.
+			fifoprint
+			#stoptrack
+			[[ "$playstatus" != "stopped" ]] && playnext ${playstatus}
+        	done 2>/dev/null & kpid=$! 
 	elif [[ "$playstatus" == "stopped" ]] && pgrep $player ; then
                 stoptrack
         fi
@@ -110,13 +132,26 @@ update() {
 # account of bsd sed not being able to replace with regex on the right.
 # http://www.linuxquestions.org/questions/linux-software-2/sed-insert-a-newline-why-does-not-it-work-158806/
 
+fifoprint(){
+        if [[ "$fifofile" != "/dev/null" ]] && [[ -p $fifofile ]]; then
+		printf "%s" "$localhist" > $fifofile & 
+	fi
+}
+
 addhist () { 
         # this if should allow playless to work without a fifo file, should
         # the user decide to override it or if neither (home or tmp) is writable.
         # history will not work fully.
+
+	#nofifo option is broken. need to figure out how to force child exit to non-zero
         if [[ "$fifofile" != "/dev/null" ]] && [[ -p $fifofile ]]; then
-                read -t 1 histdiff < $fifofile 
-                hist=${hist}${histdiff}
+               	sleep 1 
+		read -t 1 fifoline <> $fifofile 
+			if [[ "fifoline" == "" ]] ; then
+				printf "warning: was unable to read previous track set to history"
+			fi
+			histdiff=("${histdiff[@]}" $fifoline)
+                hist=${hist}${histdiff[@]}
         else    
                 hist="${hist}${current},"
         fi      
@@ -139,43 +174,21 @@ rmhist () {
 }
 
 stoptrack () {
-        pkill -P $kpid $player 2>/dev/null && addhist
-}
-
-playtrack() { #should only be called by update loop
-	 currenttrack="${masterlist[$current]}"
-        if [[ "$current" -lt "${#masterlist[@]}" ]]; then
-		printf "%b" "current track: $current \n$currenttrack\n${tps1}"
-		$player "$currenttrack" 2>/dev/null
-	else
-		printf "%b" "no file to play\n"
-		resume=$playstatus
-		playstatus=stopped
+	if [[ $kpid != "" ]] ; then 
+		print "stopped" > $fifofile 2>/dev/null &
+		pkill -P $kpid 2>/dev/null 
 	fi
 }
 
-playnext() { #should only be called by update loop
-	# addhist
+playnext () { #should only be called by update loop
 	if [[ "$1" == "shuffle" ]]; then
                 current=$(( $RANDOM % ${#masterlist[@]} ))
                 current=$(( $current - 1 ))
-
 	elif [[ "$1" == "playing" ]]; then
                 current=$(( $current + 1 ))		
 	fi
 }
 
-# waitend was created so that the open fifo pipe will get killed off, should 
-# playtrack exit improperly for reasons other than stoptrack() 
-waitend() { #should only be called by update loop
-	playstatus="stopped"
-	printf "%s" "$localhist" > $fifofile 2>/dev/null &
-	waitforpid=$!
-	sleep 1 
-	#while sleeping, waitpid will go defunct. there is no way the system will take the pid.
-	#could also try kill %%.
-	kill $waitforpid 2>/dev/null
-}
 
 path() {
 	if [[ -d "$directory" ]]; then
@@ -256,7 +269,7 @@ A directory based, playlist extension for your player. There
 is a very simple command enterpreted interface.
 Startup Options:
 	-d /directory/, -f /path/to/playlist, -h help and exit
-	-p player override, -m mixer override, -o debug,nofifo
+	-p player override, -m mixer override
 
 commands:
 
@@ -309,6 +322,7 @@ stopExit() {
 		playstatus=stopped
                 stoptrack
 		if [[ "$fifofile" != "/dev/null" ]] && [[ -p "$fifofile" ]]; then
+			read -t 0 nothing <> $fifofile
 			rm -f $fifofile
 		fi
                 exit 0
@@ -460,13 +474,25 @@ checkArgs() {
 # here is the shell section
 
 setENV
+
+
 checkArgs $@
+
+
+
 FindFifoHome
+
+
 trap "stopExit" INT #traps ctrl-c to stop track before quitting the program. else, this loop would continue.
+#trap "playstatus=stopped ; fifoprint ; kill $playerpid 2>/dev/null ; echo \"trap QUIT\"" QUIT 
+# warning# never do trap CHLD... it will invoke for every elif..
+
 
 while [[ true ]] ; do
 	printf "%b" "$tps1" 		#read -p isn't portable
 	read input
+
+
 	if [[ "$input" == "exit" ]] || [[ "$input" == "quit" ]] || [[ "$input" == "q" ]]; then
 		stopExit
 	elif [[ "$input" == "list" ]] || [[ "$input" == "ls" ]]; then
@@ -481,29 +507,32 @@ while [[ true ]] ; do
                 $mixer
 
 	elif [[ "`printf "$input" |awk '{print $1}'`" == "play" ]]; then
-		stoptrack
 		chknum=`printf "$input" |awk '{print $2}'`
+		if [[ "$playstatus" == "playing" ]] || [[ "$playstatus" == "shuffle" ]]; then
+			stoptrack
+			addhist
+			resume=$playstatus
+  		fi
 		if [[ "$chknum" == +([0-9]) ]] && [[ "$chknum" != "" ]]; then
 			current=$chknum
 		fi
+		playstatus="playing"
 		unset chknum
-		if [[ "$playstatus" != "playing" ]] && [[ "$playstatus" != "shuffle" ]]; then
-			#play can be modified for better shuffle resuming here.
-			resume=$playstatus
-                	playstatus=playing
-  		fi
-			update 
+		update 
 
 	elif [[ "$input" == "stop" ]] || [[ "$input" == "s" ]]; then
 		resume=$playstatus
 		playstatus=stopped
 		stoptrack
+		addhist
 
         elif [[ "$input" == "next" ]] || [[ "$input" == "n" ]]; then
 		stoptrack	
                 playstatus=$resume
 		resume=next
+		addhist
 		update	
+
 
 	elif [[ "$input" == "shuffle" ]]; then
 		playstatus=shuffle
@@ -552,5 +581,5 @@ while [[ true ]] ; do
 	elif [[ "$input" == "license" ]] || [[ "$input" == "lic" ]] ; then
 		printf "%b" "$license"
 	fi
-	
+
 done
